@@ -8,12 +8,12 @@ def balanced_packing(weight: torch.Tensor, num_packs: int) -> Tuple[torch.Tensor
     are as balanced as possible.
 
     Parameters:
-        weight: [X, n], the weight of each item # [layer num, group num]
+        weight: [X, n], the weight of each item
         num_packs: number of packs
     
     Returns: 
-        pack_index: [X, n], the pack index of each item # 每层每个group放在哪个node上
-        rank_in_pack: [X, n], the rank of the item in the pack # 每层每个group在node上的哪个位置
+        pack_index: [X, n], the pack index of each item
+        rank_in_pack: [X, n], the rank of the item in the pack
     """
     num_layers, num_groups = weight.shape
     assert num_groups % num_packs == 0
@@ -25,19 +25,19 @@ def balanced_packing(weight: torch.Tensor, num_packs: int) -> Tuple[torch.Tensor
         return pack_index, rank_in_pack
 
     indices = weight.float().sort(-1, descending=True).indices.cpu()
-    pack_index = torch.full_like(weight, fill_value=-1, dtype=torch.int64, device='cpu') # 记录每层每个group放在哪个node上
-    rank_in_pack = torch.full_like(pack_index, fill_value=-1) # 记录每层每个group在node上的哪个位置
+    pack_index = torch.full_like(weight, fill_value=-1, dtype=torch.int64, device='cpu')
+    rank_in_pack = torch.full_like(pack_index, fill_value=-1)
     for i in range(num_layers):
         pack_weights = [0] * num_packs
-        pack_items = [0] * num_packs                    # 每个node上group的数量？
-        for group in indices[i]:                        # 遍历每个group
+        pack_items = [0] * num_packs
+        for group in indices[i]:
             pack = min((i for i in range(num_packs) if pack_items[i] < groups_per_pack), 
-                       key=pack_weights.__getitem__)    # 找一个node索引，这个node上group没有放满，而且总的weights最小
+                       key=pack_weights.__getitem__)
             assert pack_items[pack] < groups_per_pack
-            pack_index[i, group] = pack                 # 当前层当前group放在该node上
-            rank_in_pack[i, group] = pack_items[pack]   # 当前层当前group放在node上的第几个GPU
-            pack_weights[pack] += weight[i, group]      # 记录当前node的总权重
-            pack_items[pack] += 1                       # 当前node上已经放了几个group
+            pack_index[i, group] = pack
+            rank_in_pack[i, group] = pack_items[pack]
+            pack_weights[pack] += weight[i, group]
+            pack_items[pack] += 1
     return pack_index, rank_in_pack
 
 
@@ -86,16 +86,15 @@ def rebalance_experts_hierarchical(weight: torch.Tensor, num_physical_experts: i
         logical_to_physical_map: [num_moe_layers, num_logical_experts, X]
         logical_count: [num_moe_layers, num_logical_experts]
     """
-    num_layers, num_logical_experts = weight.shape # [2, 12]
+    num_layers, num_logical_experts = weight.shape
     assert num_logical_experts % num_groups == 0
-    group_size = num_logical_experts // num_groups # 12 // 4 = 3
+    group_size = num_logical_experts // num_groups 
     assert num_groups % num_nodes == 0
-    groups_per_node = num_groups // num_nodes # 4 // 2 = 2
+    groups_per_node = num_groups // num_nodes
     assert num_gpus % num_nodes == 0
     assert num_physical_experts % num_gpus == 0
-    phy_experts_per_gpu = num_physical_experts // num_gpus # 16 // 8 = 2
+    phy_experts_per_gpu = num_physical_experts // num_gpus
 
-    # 获取一个排列的逆排列
     def inverse(perm: torch.Tensor) -> torch.Tensor:
         inv = torch.empty_like(perm)
         inv.scatter_(1, perm, torch.arange(perm.size(1), dtype=torch.int64, device=perm.device).expand(perm.shape))
@@ -103,14 +102,9 @@ def rebalance_experts_hierarchical(weight: torch.Tensor, num_physical_experts: i
 
     # Step 1: pack groups to nodes
     tokens_per_group = weight.unflatten(-1, (num_groups, group_size)).sum(-1)
-    # 每层每个group放在哪个node的哪个rank上
-    group_pack_index, group_rank_in_pack = balanced_packing(tokens_per_group, num_nodes)
-    # 下面这段代码，+torch.arange之前的部分，表示每个group的起始位置放在第几张卡上
-    # +torch.arange之后，得到了每个group里的每个expert放在第几张卡上
-    # 例如，group size是3，某个group的起始GPU是0，那么这个group里的3个expert分别放在0, 1, 2张卡上
+    group_pack_index, group_rank_in_pack = balanced_packing(tokens_per_group, num_nodes) 
     log2mlog = (((group_pack_index * groups_per_node + group_rank_in_pack) * group_size).unsqueeze(-1) + 
                 torch.arange(group_size, dtype=torch.int64, device=group_pack_index.device)).flatten(-2)
-    breakpoint()
     mlog2log = inverse(log2mlog)
 
     # Step 2: construct redundant experts within nodes
@@ -153,7 +147,7 @@ def rebalance_experts(weight: torch.Tensor, num_replicas: int, num_groups: int,
     """
     num_layers, num_logical_experts = weight.shape
     weight = weight.float().cpu()
-    if num_groups % num_nodes == 0: # for example, num_groups = 4, num_nodes = 2
+    if num_groups % num_nodes == 0:
         # use hierarchical load-balance policy
         phy2log, phyrank, logcnt = rebalance_experts_hierarchical(weight, num_replicas, 
                                                                   num_groups, num_nodes, num_gpus)
@@ -168,16 +162,3 @@ def rebalance_experts(weight: torch.Tensor, num_replicas: int, num_groups: int,
     return phy2log, log2phy, logcnt
 
 __all__ = ['rebalance_experts']
-
-
-if __name__ == '__main__':
-    weight = torch.tensor([[ 90, 132,  40,  61, 104, 165,  39,   4,  73,  56, 183,  86],
-                       [ 20, 107, 104,  64,  19, 197, 187, 157, 172,  86,  16,  27]])
-
-    num_replicas = 16
-    num_groups = 4
-    num_nodes = 2
-    num_gpus = 8
-
-    phy2log, log2phy, logcnt = rebalance_experts(weight, num_replicas, num_groups, num_nodes, num_gpus)
-    print(phy2log)
