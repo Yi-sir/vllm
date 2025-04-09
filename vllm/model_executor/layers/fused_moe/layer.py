@@ -23,6 +23,7 @@ from vllm.platforms import current_platform
 from vllm.platforms.interface import CpuArchEnum
 from vllm.utils import direct_register_custom_op
 from vllm.eplb_scheduler import EPLBScheduler
+from vllm.eplb import rebalance_experts
 
 if current_platform.is_cuda_alike():
     from .fused_moe import fused_experts
@@ -856,8 +857,16 @@ class FusedMoE(torch.nn.Module):
                                                  cu_tokens_across_dp_cpu)
         if self.eplb_scheduler is not None:
             history_expert_traffic = self.eplb_scheduler.schedule(hidden_states, router_logits)
-        else:
-            history_expert_traffic = None
+            reload_expert_map, _, _ = rebalance_experts(
+               weight=history_expert_traffic.unsqueeze(0),
+               num_replicas=self.global_num_experts + envs.VLLM_EPLB_NUM_REDUNDANT_EXPERTS,
+               num_groups=self.num_expert_group,
+               num_nodes=self.ep_size // 8,
+               num_gpus=self.ep_size
+            )
+            if self.eplb_scheduler.judge_diff(reload_expert_map, self.expert_map):
+                self.reload_experts(reload_expert_map)
+
         # Matrix multiply.
         final_hidden_states = self.quant_method.apply(
             layer=self,

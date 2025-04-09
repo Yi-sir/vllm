@@ -160,12 +160,12 @@ class DeepseekV2MoE(nn.Module):
         # router_logits: (num_tokens, n_experts)
         router_logits, _ = self.gate(hidden_states)
         if hidden_states.dtype != torch.float16:
-            final_hidden_states, history_expert_traffic = self.experts(
+            final_hidden_states = self.experts(
                 hidden_states=hidden_states,
                 router_logits=router_logits) * self.routed_scaling_factor
         else:
             # This is a special case to avoid FP16 overflow
-            final_hidden_states, history_expert_traffic = self.experts(hidden_states=hidden_states,
+            final_hidden_states = self.experts(hidden_states=hidden_states,
                                                router_logits=router_logits)
         if shared_output is not None:
             if hidden_states.dtype != torch.float16:
@@ -178,7 +178,7 @@ class DeepseekV2MoE(nn.Module):
             final_hidden_states = tensor_model_parallel_all_reduce(
                 final_hidden_states)
 
-        return final_hidden_states.view(num_tokens, hidden_dim), history_expert_traffic
+        return final_hidden_states.view(num_tokens, hidden_dim)
 
 
 def yarn_get_mscale(scale: float = 1, mscale: float = 1) -> float:
@@ -572,17 +572,13 @@ class DeepseekV2DecoderLayer(nn.Module):
             hidden_states *= 1. / self.routed_scaling_factor
         hidden_states, residual = self.post_attention_layernorm(
             hidden_states, residual)
-        if isinstance(self.mlp, DeepseekV2MoE):
-            hidden_states, history_expert_traffic = self.mlp(hidden_states)
-        else:
-            hidden_states = self.mlp(hidden_states)
-            history_expert_traffic = None
+        hidden_states = self.mlp(hidden_states)
         if isinstance(self.mlp, DeepseekV2MLP) and \
             hidden_states.dtype == torch.float16:
             # This is a special case to avoid FP16 overflow
             hidden_states *= 1. / self.routed_scaling_factor
             residual *= 1. / self.routed_scaling_factor
-        return hidden_states, residual, history_expert_traffic
+        return hidden_states, residual
 
 
 @support_torch_compile
@@ -630,36 +626,9 @@ class DeepseekV2Model(nn.Module):
                 ["hidden_states", "residual"], config.hidden_size))
 
         self.use_ep = vllm_config.parallel_config.enable_expert_parallel
-        if self.use_ep:
-            # 只有config.num_hidden_layers - config.first_k_dense_replace个moe层
-            # 这里用了config.num_hidden_layers，因为占用内存少而且方便和layer id对应
-            self.history_expert_traffic = torch.zeros((config.num_hidden_layers,
-                                                       config.n_routed_experts),
-                                                      dtype=torch.int)
-            # 初始化专家map
-            self.history_expert_map = torch.zeros(
-                (config.num_hidden_layers, config.n_routed_experts),
-                dtype=torch.int
-            )
-            start_layer = config.first_k_dense_replace
-            if start_layer < config.num_hidden_layers:
-                expert_indices = torch.arange(config.n_routed_experts)
-                self.history_expert_map[start_layer:] = expert_indices.unsqueeze(0).expand(
-                    config.num_hidden_layers - start_layer,
-                    config.n_routed_experts
-                )
-            self.topk_group = quant_config.topk_group
-            self.ep_size = get_tensor_model_parallel_world_size() * get_dp_group().world_size
-            self.num_replicas = config.n_routed_experts + envs.VLLM_EPLB_NUM_REDUNDANT_EXPERTS
-            self.expert_reload_threshold = envs.VLLM_EPLB_EXPERT_REBALANCE_THRESHOLD
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
-    
-    def judge_diff(self, new_expert_map: torch.Tensor, old_expert_map: torch.Tensor) -> bool:
-        new_moe_expert_map = new_expert_map[self.config.first_k_dense_replace:]
-        old_moe_expert_map = old_expert_map[self.config.first_k_dense_replace:]
-        return torch.sum(torch.where(new_moe_expert_map != old_moe_expert_map, 1, 0)) / new_moe_expert_map.numel() > self.expert_reload_threshold
 
     def forward(
         self,
@@ -683,16 +652,6 @@ class DeepseekV2Model(nn.Module):
             hidden_states, residual, history_expert_traffic = layer(positions, hidden_states, residual)
             if self.use_ep and history_expert_traffic is not None:
                 self.history_expert_traffic[layer_id] = history_expert_traffic
-
-        if self.use_ep and history_expert_traffic is not None:
-            # 这里是否需要去掉前面的dense layer？如果是global计算可能有影响
-            new_expert_map, _, _ = rebalance_experts(weight=self.history_expert_traffic,
-                                                     num_replicas=self.num_replicas,
-                                                     num_groups=self.topk_group,
-                                                     num_nodes=self.ep_size // 8,
-                                                     num_gpus = self.ep_size)
-            if self.judge_diff(new_expert_map, self.history_expert_map):
-                self.reload_experts(new_expert_map)
 
 
         if not get_pp_group().is_last_rank:
