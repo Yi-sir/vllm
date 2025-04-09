@@ -22,6 +22,7 @@ from vllm.model_executor.utils import set_weight_attrs
 from vllm.platforms import current_platform
 from vllm.platforms.interface import CpuArchEnum
 from vllm.utils import direct_register_custom_op
+from vllm.eplb_scheduler import EPLBScheduler
 
 if current_platform.is_cuda_alike():
     from .fused_moe import fused_experts
@@ -445,6 +446,23 @@ class FusedMoE(torch.nn.Module):
                 ep_size=self.ep_size,
                 ep_rank=self.ep_rank,
                 global_num_experts=self.global_num_experts)
+
+            # 只有指定rank上才需要初始化eplb scheduler
+            assert envs.VLLM_EPLB_SCHEDULER_RANK >= 0 and envs.VLLM_EPLB_SCHEDULER_RANK < self.ep_size
+            if self.ep_rank == envs.VLLM_EPLB_SCHEDULER_RANK:
+                self.eplb_scheduler = EPLBScheduler(
+                    num_experts=self.global_num_experts,
+                    prefix=prefix,
+                    use_group_topk=self.use_grouped_topk,
+                    topk=self.top_k,
+                    renormalize=self.renormalize,
+                    num_expert_group=self.num_expert_group,
+                    custom_routing_function=self.custom_routing_function,
+                    scoring_func=self.scoring_func,
+                    e_score_correction_bias=self.e_score_correction_bias
+                )
+            else:
+                self.eplb_scheduler = None
         else:
             # Adjust TP size for DP attention
             self.tp_rank = tp_rank + self.tp_size * self.dp_rank
@@ -836,7 +854,10 @@ class FusedMoE(torch.nn.Module):
                                                  cu_tokens_across_dp_cpu)
             router_logits = self.naive_multicast(router_logits,
                                                  cu_tokens_across_dp_cpu)
-
+        if self.eplb_scheduler is not None:
+            history_expert_traffic = self.eplb_scheduler.schedule(hidden_states, router_logits)
+        else:
+            history_expert_traffic = None
         # Matrix multiply.
         final_hidden_states = self.quant_method.apply(
             layer=self,
@@ -868,7 +889,7 @@ class FusedMoE(torch.nn.Module):
             final_hidden_states = tensor_model_parallel_all_reduce(
                 final_hidden_states)
 
-        return final_hidden_states
+        return final_hidden_states, history_expert_traffic
 
     @classmethod
     def make_expert_params_mapping(

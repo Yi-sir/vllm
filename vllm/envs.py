@@ -107,6 +107,12 @@ if TYPE_CHECKING:
     VLLM_TPU_BUCKET_PADDING_GAP: int = 0
     VLLM_USE_DEEP_GEMM: bool = False
 
+    # for EPLB
+    VLLM_EPLB_MOVING_AVG_FACTOR: float = 0.7
+    VLLM_EPLB_TRAFFIC_UPDATE_INTERVAL: int = 10000
+    VLLM_EPLB_EXPERT_REBALANCE_THRESHOLD: float = 0.3
+    VLLM_EPLB_NUM_REDUNDANT_EXPERTS: int = 0
+    VLLM_EPLB_SCHEDULER_RANK: int = 0
 
 def get_default_cache_root():
     return os.getenv(
