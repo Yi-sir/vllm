@@ -7,6 +7,8 @@ from typing import Callable, List, Optional, Tuple
 import torch
 import torch.nn.functional as F
 from torch.nn.parameter import UninitializedParameter
+from safetensors.torch import load_file, safe_open, save_file
+from typing import Any, Callable, Dict, Generator, Iterable, List, Optional, Tuple, cast
 
 import vllm.envs as envs
 from vllm.config import get_current_vllm_config
@@ -363,6 +365,21 @@ def determine_expert_map(
 
 
 class FusedMoE(torch.nn.Module):
+
+    @dataclasses.dataclass
+    class ParamMetaData:
+
+        param_name: str
+
+        shard_id: str
+
+        expert_id: int
+
+        weight_index: str
+
+        weight_filepath: str
+
+
     """FusedMoE layer for MoE models.
 
     This layer contains both MergedColumnParallel weights (gate_up_proj /
@@ -520,6 +537,9 @@ class FusedMoE(torch.nn.Module):
 
         self.quant_method.create_weights(layer=self, **moe_quant_params)
 
+        self.expert_id_to_param_metadata_map: Dict[int, List[FusedMoE.ParamMetaData]] = {}
+
+
     def _load_per_tensor_weight_scale(self, shard_id: str,
                                       param: torch.nn.Parameter,
                                       loaded_weight: torch.Tensor,
@@ -640,9 +660,75 @@ class FusedMoE(torch.nn.Module):
             return expert_id
         return self.expert_map[expert_id].item()
 
-    def weight_loader(self, param: torch.nn.Parameter,
-                      loaded_weight: torch.Tensor, weight_name: str,
-                      shard_id: str, expert_id: int) -> None:
+    def _read_param_data_from_safetensors(
+        weigth_index: str, weight_filepath: str
+    ) -> torch.Tensor:
+
+        with safe_open(weight_filepath, framework="pt") as f:
+            param = f.get_tensor(name) if weight_index in f.keys() else None
+            return param
+
+    def _reload_experts_param_data(expert_ids: List[int]):
+
+        for expert_id in expert_ids:
+
+            if expert_id not in self.expert_id_to_param_metadata_map:
+                continue
+
+            param_metadata_list = self.expert_id_to_param_metadata_map[expert_id]
+            for param_metadata in param_metadata_list:
+                loaded_weight = self._read_param_data_from_safetensors(
+                    param.weight_index, param.weight_filepath
+                )
+                if loaded_weight == None:
+                    continue
+                params_dict = dict(self.named_parameters())
+                param = params_dict[param.param_name]
+                self._weight_loader_original(
+                    param, loaded_weight, param.shard_id, param.expert_id
+                )
+
+    def reload_experts(reloaded_expert_map: torch.Tensor):
+        diff_indices = torch.where(
+            reloaded_expert_map != self.expert_map and reloaded_expert_map != -1
+        )
+        expert_ids = diff_indices[0].tolist()
+        self.expert_map = reloaded_expert_map
+        self._reload_experts_param_data(expert_ids)
+
+    def weight_loader(
+        self,
+        param: torch.nn.Parameter,
+        loaded_weight: torch.Tensor,
+        weight_name: str,
+        shard_id: str,
+        expert_id: int,
+        weight_index: Optional[str] = None,
+        weight_filepath: Optional[str] = None,
+    ) -> None:
+
+        if weight_index != None and weight_filepath != None:
+            param_metadata = FusedMoE.ParamMetaData(
+                weight_name, shard_id, expert_id, weight_index, weight_filepath
+            )
+
+            if expert_id in self.expert_id_to_param_metadata_map.keys():
+                self.expert_id_to_param_metadata_map[expert_id].append(param_metadata)
+            else:
+                self.expert_id_to_param_metadata_map[expert_id] = [param_metadata]
+
+        return self._weight_loader_original(
+            param, loaded_weight, weight_name, shard_id, expert_id
+        )
+
+    def _weight_loader_original(
+        self,
+        param: torch.nn.Parameter,
+        loaded_weight: torch.Tensor,
+        weight_name: str,
+        shard_id: str,
+        expert_id: int,
+    ) -> None:
 
         expert_id = self._map_global_expert_id_to_local_expert_id(expert_id)
         if expert_id == -1:

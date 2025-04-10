@@ -745,7 +745,7 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP):
 
         params_dict = dict(self.named_parameters())
         loaded_params: Set[str] = set()
-        for name, loaded_weight in weights:
+        for name, loaded_weight, weight_filepath in weights:
             if "rotary_emb.inv_freq" in name:
                 continue
 
@@ -782,6 +782,7 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP):
                     param_name, weight_name, expert_id, shard_id = mapping
                     if weight_name not in name:
                         continue
+                    weight_index = name
                     name = name.replace(weight_name, param_name)
 
                     if is_pp_missing_parameter(name, self):
@@ -789,11 +790,15 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP):
 
                     param = params_dict[name]
                     weight_loader = param.weight_loader
-                    weight_loader(param,
-                                  loaded_weight,
-                                  name,
-                                  shard_id=shard_id,
-                                  expert_id=expert_id)
+                    weight_loader(
+                        param,
+                        loaded_weight,
+                        name,
+                        shard_id=shard_id,
+                        expert_id=expert_id,
+                        weight_index=weight_index,
+                        weight_filepath=weight_filepath,
+                    )
                     break
                 else:
                     # Skip loading extra bias for GPTQ models.

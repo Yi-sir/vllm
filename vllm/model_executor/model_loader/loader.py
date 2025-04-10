@@ -343,7 +343,7 @@ class DefaultModelLoader(BaseModelLoader):
 
     def _get_weights_iterator(
             self, source: "Source"
-    ) -> Generator[Tuple[str, torch.Tensor], None, None]:
+    ) -> Generator[Tuple[str, torch.Tensor, str], None, None]:
         """Get an iterator for the model weights based on the load format."""
         hf_folder, hf_weights_files, use_safetensors = self._prepare_weights(
             source.model_or_path, source.revision, source.fall_back_to_pt,
@@ -407,7 +407,7 @@ class DefaultModelLoader(BaseModelLoader):
         self,
         model_config: ModelConfig,
         model: nn.Module,
-    ) -> Generator[Tuple[str, torch.Tensor], None, None]:
+    ) -> Generator[Tuple[str, torch.Tensor, str], None, None]:
         primary_weights = DefaultModelLoader.Source(
             model_config.model,
             model_config.revision,

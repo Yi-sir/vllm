@@ -430,7 +430,7 @@ def np_cache_weights_iterator(
 def safetensors_weights_iterator(
     hf_weights_files: List[str],
     use_tqdm_on_load: bool,
-) -> Generator[Tuple[str, torch.Tensor], None, None]:
+) -> Generator[Tuple[str, torch.Tensor, str], None, None]:
     """Iterate over the weights in the model safetensor files."""
     for st_file in tqdm(
             hf_weights_files,
@@ -441,7 +441,7 @@ def safetensors_weights_iterator(
         with safe_open(st_file, framework="pt") as f:
             for name in f.keys():  # noqa: SIM118
                 param = f.get_tensor(name)
-                yield name, param
+                yield name, param, st_file
 
 
 def runai_safetensors_weights_iterator(
