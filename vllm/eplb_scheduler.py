@@ -35,7 +35,8 @@ class EPLBScheduler:
             envs.VLLM_EPLB_EXPERT_REBALANCE_THRESHOLD < 1
             and envs.VLLM_EPLB_EXPERT_REBALANCE_THRESHOLD > 0
         )
-
+        # 专家重载阈值, 方差
+        self.expert_reload_threshold = envs.VLLM_EPLB_EXPERT_REBALANCE_THRESHOLD
         assert (
             envs.VLLM_EPLB_MOVING_AVG_FACTOR <= 1
             and envs.VLLM_EPLB_MOVING_AVG_FACTOR >= 0
@@ -94,7 +95,7 @@ class EPLBScheduler:
             e_score_correction_bias=self.e_score_correction_bias,
         )
         # 记录当前流量
-        self.current_expert_traffic[topk_ids] += torch.bincount(
+        self.current_expert_traffic += torch.bincount(
             topk_ids.view(-1), minlength=self.global_num_experts
         )
         self.current_traffic_update_times += 1
@@ -111,28 +112,11 @@ class EPLBScheduler:
         else:
             return None
 
-    def judge_diff(
-        self, new_expert_map: torch.Tensor, old_expert_map: torch.Tensor
-    ) -> bool:
+    def judge_diff(self) -> bool:
         """
-        根据新的map和旧的map判断是否需要重新load专家
-        需要注意, 这里传入的新map由eplb库计算得到, 是一个形状为[num_layers, num_experts]的tensor
-        表示每一层里num_experts个专家分别分布在哪个rank上。
-        而旧的expert_map是形状为[num_experts]的tensor, 表示当前层全局专家索引到本地专家索引的映射
-
-        By design, 这里new_expert_map的层数只能是1
-
-        Args:
-            new_expert_map: [num_layers, num_experts]
-            old_expert_map: [num_experts]
+        用self.history_expert_traffic的方差计算是否需要reload
 
         Returns:
             bool: 是否需要重新load专家
         """
-        assert new_expert_map.shape[0] == 1 and new_expert_map.shape[1] == old_expert_map.shape[0]
-
-        return (
-            torch.sum(torch.where(new_expert_map.squeeze(0) != old_expert_map, 1, 0))
-            / new_expert_map.numel()
-            > self.expert_reload_threshold
-        )
+        return self.history_expert_traffic.var() > self.expert_reload_threshold

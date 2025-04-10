@@ -649,10 +649,7 @@ class DeepseekV2Model(nn.Module):
             residual = intermediate_tensors["residual"]
 
         for layer_id, layer in enumerate(self.layers[self.start_layer:self.end_layer]):
-            hidden_states, residual, history_expert_traffic = layer(positions, hidden_states, residual)
-            if self.use_ep and history_expert_traffic is not None:
-                self.history_expert_traffic[layer_id] = history_expert_traffic
-
+            hidden_states, residual = layer(positions, hidden_states, residual)
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors({

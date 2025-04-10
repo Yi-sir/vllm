@@ -857,14 +857,14 @@ class FusedMoE(torch.nn.Module):
                                                  cu_tokens_across_dp_cpu)
         if self.eplb_scheduler is not None:
             history_expert_traffic = self.eplb_scheduler.schedule(hidden_states, router_logits)
-            reload_expert_map, _, _ = rebalance_experts(
-               weight=history_expert_traffic.unsqueeze(0),
-               num_replicas=self.global_num_experts + envs.VLLM_EPLB_NUM_REDUNDANT_EXPERTS,
-               num_groups=self.num_expert_group,
-               num_nodes=self.ep_size // 8,
-               num_gpus=self.ep_size
-            )
-            if self.eplb_scheduler.judge_diff(reload_expert_map, self.expert_map):
+            if self.eplb_scheduler.judge_diff():
+                reload_expert_map, _, _ = rebalance_experts(
+                weight=history_expert_traffic.unsqueeze(0),
+                num_replicas=self.global_num_experts + envs.VLLM_EPLB_NUM_REDUNDANT_EXPERTS,
+                num_groups=self.num_expert_group,
+                num_nodes=self.ep_size // 8,
+                num_gpus=self.ep_size
+                )
                 self.reload_experts(reload_expert_map)
 
         # Matrix multiply.
@@ -898,7 +898,7 @@ class FusedMoE(torch.nn.Module):
             final_hidden_states = tensor_model_parallel_all_reduce(
                 final_hidden_states)
 
-        return final_hidden_states, history_expert_traffic
+        return final_hidden_states
 
     @classmethod
     def make_expert_params_mapping(
