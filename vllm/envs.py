@@ -112,7 +112,6 @@ if TYPE_CHECKING:
     VLLM_EPLB_TRAFFIC_UPDATE_INTERVAL: int = 10000
     VLLM_EPLB_EXPERT_REBALANCE_THRESHOLD: float = 0.3
     VLLM_EPLB_NUM_REDUNDANT_EXPERTS: int = 0
-    VLLM_EPLB_SCHEDULER_RANK: int = 0
 
 def get_default_cache_root():
     return os.getenv(
@@ -698,6 +697,23 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Allow use of DeepGemm kernels for fused moe ops.
     "VLLM_USE_DEEP_GEMM":
     lambda: bool(int(os.getenv("VLLM_USE_DEEP_GEMM", "0"))),
+
+    "VLLM_EPLB_MOVING_AVG_FACTOR":
+    lambda: float(os.environ["VLLM_EPLB_MOVING_AVG_FACTOR"])
+    if "VLLM_EPLB_MOVING_AVG_FACTOR" in os.environ else 0.7,
+
+    "VLLM_EPLB_TRAFFIC_UPDATE_INTERVAL":
+    lambda: int(os.environ["VLLM_EPLB_TRAFFIC_UPDATE_INTERVAL"])
+    if "VLLM_EPLB_TRAFFIC_UPDATE_INTERVAL" in os.environ else 10000,
+
+    "VLLM_EPLB_EXPERT_REBALANCE_THRESHOLD":
+    lambda: float(os.environ["VLLM_EPLB_EXPERT_REBALANCE_THRESHOLD"])
+    if "VLLM_EPLB_EXPERT_REBALANCE_THRESHOLD" in os.environ else 0.3,
+
+    "VLLM_EPLB_NUM_REDUNDANT_EXPERTS":
+    lambda: int(os.environ["VLLM_EPLB_NUM_REDUNDANT_EXPERTS"])
+    if "VLLM_EPLB_NUM_REDUNDANT_EXPERTS" in os.environ else 0
+
 }
 
 # end-env-vars-definition
