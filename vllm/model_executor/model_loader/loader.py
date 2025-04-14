@@ -400,8 +400,8 @@ class DefaultModelLoader(BaseModelLoader):
         if self.counter_before_loading_weights == 0.0:
             self.counter_before_loading_weights = time.perf_counter()
         # Apply the prefix.
-        return ((source.prefix + name, tensor)
-                for (name, tensor) in weights_iterator)
+        return ((source.prefix + name, tensor, file)
+                for (name, tensor, file) in weights_iterator)
 
     def _get_all_weights(
         self,
