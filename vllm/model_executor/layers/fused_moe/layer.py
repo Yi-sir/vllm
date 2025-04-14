@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
+from functorch.experimental import control_flow as cf
+
 from abc import abstractmethod
 from enum import Enum
 from typing import Callable, List, Optional, Tuple
@@ -24,6 +26,10 @@ from vllm.model_executor.utils import set_weight_attrs
 from vllm.platforms import current_platform
 from vllm.platforms.interface import CpuArchEnum
 from vllm.utils import direct_register_custom_op
+<<<<<<< HEAD
+import dataclasses
+=======
+>>>>>>> a2697d2904568634e088e6696315937600f5eb8f
 from vllm.eplb import rebalance_experts
 
 if current_platform.is_cuda_alike():
@@ -36,6 +42,90 @@ if current_platform.is_tpu():
 else:
     fused_moe_pallas = None  # type: ignore
 logger = init_logger(__name__)
+
+
+class ExpertLoadingRecorder:
+    """
+    EPLB调度器, 仅在vllm/model_executor/layers/fused_moe/layer.py中使用
+    """
+
+    def __init__(
+        self,
+        num_experts: int,
+        topk: int,
+        use_group_topk: bool = False,
+        renormalize: bool = True,
+        num_expert_group: Optional[int] = None,
+        custom_routing_function: Optional[Callable] = None,
+        scoring_func: str = "softmax",
+        e_score_correction_bias: Optional[torch.Tensor] = None,
+    ):
+        self.physical_num_experts = num_experts
+        
+        self.clear_history()
+
+        self.use_group_topk = use_group_topk
+        self.top_k = topk
+        self.renormalize = renormalize
+        self.num_expert_group = num_expert_group
+        self.custom_routing_function = custom_routing_function
+        self.scoring_func = scoring_func
+        self.e_score_correction_bias = e_score_correction_bias
+    
+    @staticmethod
+    def custom_ops_bincount(x: torch.Tensor, length: int = None) -> torch.Tensor:
+        if x.dim() != 1:
+            raise ValueError("Only support one-dimensional!")
+        if length is None:
+            length = int(x.max().item())+1
+        
+        one_hot = F.one_hot(x.long(), num_classes=length)
+        return one_hot.sum(dim=0)
+
+    
+    def record_expert_loading(
+        self, hidden_states: torch.Tensor, router_logits: torch.Tensor, moving_avg_factor: float = 0.05
+    ) -> Optional[torch.Tensor]:
+        """
+        Args:
+            hidden_states: [tokens, hidden_size] 
+            router_logits: [tokens, num_experts] 
+        """
+        _, topk_ids = FusedMoE.select_experts(
+            hidden_states=hidden_states,
+            router_logits=router_logits,
+            use_grouped_topk=self.use_group_topk,
+            top_k=self.top_k,
+            renormalize=self.renormalize,
+            topk_group=self.top_k,
+            num_expert_group=self.num_expert_group,
+            custom_routing_function=self.custom_routing_function,
+            scoring_func=self.scoring_func,
+            e_score_correction_bias=self.e_score_correction_bias,
+        )
+        # 记录当前流量
+        # current_expert_traffic = torch.bincount(
+        #     topk_ids.view(-1), minlength=self.physical_num_experts
+        # )
+        current_expert_traffic = ExpertLoadingRecorder.custom_ops_bincount(
+            topk_ids.view(-1), self.physical_num_experts
+        )
+        self.current_num_records += 1
+        self.history_expert_traffic = (
+                current_expert_traffic.to(self.history_expert_traffic.device) * moving_avg_factor
+                + self.history_expert_traffic * (1 - moving_avg_factor)
+            )
+        return self.history_expert_traffic
+
+
+    def get_reload_flag(self, var_threshold: float = 0.3, max_records: int = 1000) -> bool:
+        return self.current_num_records >= max_records or self.history_expert_traffic.var() > var_threshold
+
+    def clear_history(self) -> None:
+        # clear history traffic
+        self.history_expert_traffic = torch.ones(self.physical_num_experts)  # 每个专家的历史流量
+        self.current_num_records = 0  # 当前流量更新次数
+
 
 
 class FusedMoeWeightScaleSupported(Enum):
@@ -476,21 +566,21 @@ class EPLBScheduler:
 
 
 
+@dataclasses.dataclass
+class ParamMetaData:
+
+    param_name: str
+
+    shard_id: str
+
+    expert_id: int
+
+    weight_index: str
+
+    weight_filepath: str
+
+
 class FusedMoE(torch.nn.Module):
-
-    @dataclasses.dataclass
-    class ParamMetaData:
-
-        param_name: str
-
-        shard_id: str
-
-        expert_id: int
-
-        weight_index: str
-
-        weight_filepath: str
-
 
     """FusedMoE layer for MoE models.
 
@@ -577,9 +667,17 @@ class FusedMoE(torch.nn.Module):
                 ep_rank=self.ep_rank,
                 global_num_experts=self.global_num_experts)
 
+<<<<<<< HEAD
+            # 只有指定rank上才需要初始化eplb scheduler
+            # assert envs.VLLM_EPLB_SCHEDULER_RANK >= 0 and envs.VLLM_EPLB_SCHEDULER_RANK < self.ep_size
+            # if self.ep_rank == envs.VLLM_EPLB_SCHEDULER_RANK:
+            self.eplb_scheduler = ExpertLoadingRecorder(
+                num_experts=self.global_num_experts,
+=======
             self.eplb_scheduler = EPLBScheduler(
                 num_experts=self.global_num_experts,
                 prefix=prefix,
+>>>>>>> a2697d2904568634e088e6696315937600f5eb8f
                 use_group_topk=use_grouped_topk,
                 topk=top_k,
                 renormalize=renormalize,
@@ -588,6 +686,11 @@ class FusedMoE(torch.nn.Module):
                 scoring_func=scoring_func,
                 e_score_correction_bias=e_score_correction_bias
             )
+<<<<<<< HEAD
+            # else:
+            #     self.eplb_scheduler = None
+=======
+>>>>>>> a2697d2904568634e088e6696315937600f5eb8f
         else:
             # Adjust TP size for DP attention
             self.tp_rank = tp_rank + self.tp_size * self.dp_rank
@@ -644,7 +747,7 @@ class FusedMoE(torch.nn.Module):
 
         self.quant_method.create_weights(layer=self, **moe_quant_params)
 
-        self.expert_id_to_param_metadata_map: Dict[int, List[FusedMoE.ParamMetaData]] = {}
+        self.expert_id_to_param_metadata_map: Dict[int, List[ParamMetaData]] = {}
 
 
     def _load_per_tensor_weight_scale(self, shard_id: str,
@@ -768,14 +871,14 @@ class FusedMoE(torch.nn.Module):
         return self.expert_map[expert_id].item()
 
     def _read_param_data_from_safetensors(
-        weigth_index: str, weight_filepath: str
+        self, weight_index: str, weight_filepath: str
     ) -> torch.Tensor:
 
         with safe_open(weight_filepath, framework="pt") as f:
-            param = f.get_tensor(name) if weight_index in f.keys() else None
+            param = f.get_tensor(weight_index) if weight_index in f.keys() else None
             return param
 
-    def _reload_experts_param_data(expert_ids: List[int]):
+    def _reload_experts_param_data(self, expert_ids: List[int]):
 
         for expert_id in expert_ids:
 
@@ -785,21 +888,21 @@ class FusedMoE(torch.nn.Module):
             param_metadata_list = self.expert_id_to_param_metadata_map[expert_id]
             for param_metadata in param_metadata_list:
                 loaded_weight = self._read_param_data_from_safetensors(
-                    param.weight_index, param.weight_filepath
+                    param_metadata.weight_index, param_metadata.weight_filepath
                 )
                 if loaded_weight == None:
                     continue
                 params_dict = dict(self.named_parameters())
-                param = params_dict[param.param_name]
+                param = params_dict[param_metadata.param_name.split(".")[-1]]
                 self._weight_loader_original(
-                    param, loaded_weight, param.shard_id, param.expert_id
+                    param, loaded_weight, param_metadata.param_name, param_metadata.shard_id, param_metadata.expert_id
                 )
+    
 
-    def reload_experts(reloaded_expert_map: torch.Tensor):
-        diff_indices = torch.where(
-            reloaded_expert_map != self.expert_map and reloaded_expert_map != -1
-        )
-        expert_ids = diff_indices[0].tolist()
+    def reload_experts(self, reloaded_expert_map: torch.Tensor):
+        reloaded_expert_map = reloaded_expert_map.to(self.expert_map.device)
+        indices = torch.where(reload_expert_map != self.expert_map & reloaded_expert_map != -1)
+        expert_ids = indices[0].tolist()
         self.expert_map = reloaded_expert_map
         self._reload_experts_param_data(expert_ids)
 
@@ -815,7 +918,7 @@ class FusedMoE(torch.nn.Module):
     ) -> None:
 
         if weight_index != None and weight_filepath != None:
-            param_metadata = FusedMoE.ParamMetaData(
+            param_metadata = ParamMetaData(
                 weight_name, shard_id, expert_id, weight_index, weight_filepath
             )
 
@@ -922,7 +1025,7 @@ class FusedMoE(torch.nn.Module):
             # FusedMoeWeightScaleSupported
             # TODO @dsikka: once hardened, refactor to use vLLM Parameters
             # specific to each case
-            quant_method = getattr(param, "quant_method", None)
+            quant_method = getattr(param, "quant_method", FusedMoeWeightScaleSupported.BLOCK.value)
             if quant_method == FusedMoeWeightScaleSupported.CHANNEL.value:
                 self._load_per_channel_weight_scale(
                     shard_id=shard_id,
@@ -1048,6 +1151,25 @@ class FusedMoE(torch.nn.Module):
                                                  cu_tokens_across_dp_cpu)
             router_logits = self.naive_multicast(router_logits,
                                                  cu_tokens_across_dp_cpu)
+<<<<<<< HEAD
+        if self.eplb_scheduler is not None:
+            history_expert_traffic = self.eplb_scheduler.record_expert_loading(hidden_states, router_logits)
+
+            if self.eplb_scheduler.get_reload_flag():
+    
+                reload_expert_map, _, _ = rebalance_experts(
+                weight=history_expert_traffic.unsqueeze(0),
+                num_replicas=self.global_num_experts,
+                num_groups=self.num_expert_group,
+                num_nodes=self.ep_size // 8,
+                num_gpus=self.ep_size
+                )
+
+                expert_map = self.eplb_to_vllm_format_expert_map(reload_expert_map)
+                self.reload_experts(expert_map)
+                self.eplb_scheduler.clear_history()
+
+=======
 
         history_expert_traffic = self.eplb_scheduler.schedule(hidden_states, router_logits)
         if self.eplb_scheduler.judge_diff():
@@ -1059,6 +1181,7 @@ class FusedMoE(torch.nn.Module):
             num_gpus=self.ep_size
             )
             self.reload_experts(reload_expert_map)
+>>>>>>> a2697d2904568634e088e6696315937600f5eb8f
 
         # Matrix multiply.
         final_hidden_states = self.quant_method.apply(
@@ -1092,6 +1215,21 @@ class FusedMoE(torch.nn.Module):
                 final_hidden_states)
 
         return final_hidden_states
+
+
+    def eplb_to_vllm_format_expert_map(self, eplb_phy2log):
+        _, num_experts = eplb_phy2log.shape
+        num_experts_per_rank = num_experts / self.ep_size
+        start = self.ep_rank * num_experts_per_rank
+        end = start + num_experts_per_rank
+        expert_ids = eplb_phy2log[0][int(start):int(end)].tolist()
+        expert_map = torch.full((self.global_num_experts, ), -1, dtype=torch.int32)
+        log_id = 0
+        for i in expert_ids:
+            expert_map[i] = log_id
+            log_id = log_id + 1 
+        return expert_map
+
 
     @classmethod
     def make_expert_params_mapping(

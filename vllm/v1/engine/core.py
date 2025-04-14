@@ -40,6 +40,9 @@ from vllm.v1.serial_utils import MsgpackDecoder, MsgpackEncoder
 from vllm.v1.structured_output import StructuredOutputManager
 from vllm.version import __version__ as VLLM_VERSION
 
+import torch._dynamo
+torch._dynamo.config.suppress_errors = True
+
 logger = init_logger(__name__)
 
 POLLING_TIMEOUT_S = 2.5
